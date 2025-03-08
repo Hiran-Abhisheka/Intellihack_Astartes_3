@@ -1,11 +1,12 @@
-# evaluate.py
+# evaluate.py - Modified to use transformers instead of llama-cpp
 import os
 import json
 import argparse
 import numpy as np
+import torch
 from tqdm import tqdm
 from datasets import load_from_disk
-from llama_cpp import Llama
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from rouge import Rouge
 from nltk.translate.bleu_score import sentence_bleu
 from nltk.tokenize import word_tokenize
@@ -15,15 +16,16 @@ import nltk
 nltk.download('punkt')
 
 def setup_model(model_path):
-    """Load the GGUF model for inference."""
-    model = Llama(
-        model_path=model_path,
-        n_ctx=2048,
-        n_gpu_layers=-1
+    """Load the model for inference."""
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        device_map="auto",
+        torch_dtype=torch.float16
     )
-    return model
+    return model, tokenizer
 
-def generate_response(model, question, max_tokens=512, temperature=0.7):
+def generate_response(model, tokenizer, question, max_tokens=512, temperature=0.7):
     """Generate a response to the given question."""
     prompt = f"""Answer the following question about AI research:
 
@@ -31,15 +33,20 @@ Question: {question}
 
 Answer:"""
     
-    response = model(
-        prompt,
-        max_tokens=max_tokens,
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    
+    response = model.generate(
+        **inputs,
+        max_new_tokens=max_tokens,
         temperature=temperature,
         top_p=0.95,
         top_k=40
     )
     
-    return response["choices"][0]["text"]
+    generated_text = tokenizer.decode(response[0], skip_special_tokens=True)
+    # Extract just the answer part
+    answer = generated_text[len(prompt):]
+    return answer
 
 def calculate_metrics(predictions, references):
     """Calculate ROUGE and BLEU scores."""
@@ -68,7 +75,7 @@ def calculate_metrics(predictions, references):
 def evaluate_model(model_path, test_dataset_path, output_file):
     """Evaluate the model on a test dataset."""
     # Load model
-    model = setup_model(model_path)
+    model, tokenizer = setup_model(model_path)
     
     # Load test dataset
     test_dataset = load_from_disk(test_dataset_path)
@@ -81,7 +88,7 @@ def evaluate_model(model_path, test_dataset_path, output_file):
         question = example["question"]
         reference = example["answer"]
         
-        prediction = generate_response(model, question)
+        prediction = generate_response(model, tokenizer, question)
         
         predictions.append(prediction)
         references.append(reference)
@@ -108,8 +115,8 @@ def evaluate_model(model_path, test_dataset_path, output_file):
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate AI Research QA Model")
-    parser.add_argument("--model", type=str, default="./quantized_model/qwen-ai-research-4bit.gguf",
-                        help="Path to the GGUF model file")
+    parser.add_argument("--model", type=str, default="./quantized_model/merged_model",
+                        help="Path to the model directory")
     parser.add_argument("--test_dataset", type=str, default="./ai_research_qa_dataset/test",
                         help="Path to the test dataset")
     parser.add_argument("--output", type=str, default="./evaluation_results.json",

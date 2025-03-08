@@ -32,6 +32,9 @@ def merge_and_save(model_dir, output_dir):
     
     return merged_model_path
 
+# For backward compatibility
+merge_and_quantize = merge_and_save
+
 if __name__ == "__main__":
     merge_and_save(
         model_dir="./finetuned-qwen-ai-research",

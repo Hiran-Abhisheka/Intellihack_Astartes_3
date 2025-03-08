@@ -8,6 +8,7 @@ import PyPDF2
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import Dataset
+import torch
 
 def extract_text_from_pdf(pdf_path):
     """Extract text from a PDF file."""
@@ -105,7 +106,25 @@ def create_dataset(document_dir, output_dir):
     # Load model and tokenizer for question generation
     model_name = "Qwen/Qwen2.5-3B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", load_in_8bit=True)
+    
+    # Load model without quantization since CUDA is not available
+    try:
+        # First try to load with CPU offloading to conserve memory
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, 
+            device_map="auto", 
+            torch_dtype=torch.float16
+        )
+    except Exception as e:
+        print(f"Warning: Couldn't load model with device_map='auto'. Falling back to CPU. Error: {e}")
+        # If that fails, fall back to CPU-only with lower precision
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            low_cpu_mem_usage=True
+        )
+    
+    # If you have limited memory, you can also consider reducing batch size or using smaller chunks of text
     
     training_data = []
     
@@ -126,13 +145,15 @@ def create_dataset(document_dir, output_dir):
             sections = split_into_sections(document_content)
             
             # Process each section
-            for section in tqdm(sections, desc=f"Sections in {os.path.basename(doc_path)}", leave=False):
+            # For CPU-only mode, process fewer sections per document to save memory
+            max_sections = min(5, len(sections))  # Process at most 5 sections per document
+            for section in tqdm(sections[:max_sections], desc=f"Sections in {os.path.basename(doc_path)}", leave=False):
                 # Skip very short sections
                 if len(section.split()) < 50:
                     continue
                 
-                # Generate QA pairs from this section
-                qa_pairs = generate_qa_pairs(section, model, tokenizer)
+                # Generate only 1 QA pair per section to save memory and time
+                qa_pairs = generate_qa_pairs(section, model, tokenizer, num_pairs=1)
                 
                 # Format for training
                 formatted_pairs = prepare_training_format(qa_pairs, tokenizer)
